@@ -1,0 +1,38 @@
+name: Actualizar histórico prdemcad
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  actualizar-historico:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v6
+
+      - name: Instalar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Instalar librerías
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar el script
+        env:
+          ESIOS_API_TOKEN: ${{ secrets.ESIOS_API_TOKEN }}
+        run: python read_prdemcad.py
+
+      - name: Guardar cambios en GitHub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Historico_prdemcad.xlsx
+          git diff --cached --quiet || git commit -m "Actualiza histórico prdemcad"
+          git push
