@@ -3,7 +3,8 @@ name: Actualizar histórico prdemcad
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 5 * * *'
+    - cron: '0 6 * * *'
+    - cron: '0 18 * * *'
 
 permissions:
   contents: write
