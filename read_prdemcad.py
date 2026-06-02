@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import zipfile
 from datetime import datetime, date, timedelta
 
@@ -15,9 +16,12 @@ def build_window():
     """
     Ventana de búsqueda:
     desde el primer día del mes anterior hasta hoy.
+
     Esto cubre el caso típico:
     - A2 = mes anterior
     - A1 = mes actual
+
+    Y si un día no existe uno de los dos, no pasa nada.
     """
     today = date.today()
     first_day_this_month = today.replace(day=1)
@@ -49,10 +53,37 @@ def empty_df():
     )
 
 
+def extract_period_from_filename(source_file_name: str):
+    """
+    Extrae el periodo desde nombres tipo:
+      A1_prdemcad_20260601_20260630
+      A2_prdemcad_20260501_20260531
+      A1_prdemcad_20260601_20260630.txt
+
+    Devuelve:
+      (start_date, end_date)
+    o
+      (None, None) si no puede extraerlo
+    """
+    base_name = os.path.basename(source_file_name)
+
+    match = re.search(r"A[12]_prdemcad_(\d{8})_(\d{8})", base_name, re.IGNORECASE)
+    if not match:
+        return None, None
+
+    start_str = match.group(1)
+    end_str = match.group(2)
+
+    start_date = datetime.strptime(start_str, "%Y%m%d").date()
+    end_date = datetime.strptime(end_str, "%Y%m%d").date()
+
+    return start_date, end_date
+
+
 def download_zip(token: str, archive_id: int, start_date: date, end_date: date):
     """
     Descarga el ZIP del archive.
-    Si falla, devuelve None en lugar de romper el proceso.
+    Si falla, devuelve None y NO rompe el flujo.
     """
     url = f"https://api.esios.ree.es/archives/{archive_id}/download"
     headers = {
@@ -71,6 +102,17 @@ def download_zip(token: str, archive_id: int, start_date: date, end_date: date):
 
 
 def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, source_archive_id: int) -> pd.DataFrame:
+    """
+    Convierte el TXT prdemcad en una tabla:
+    Fecha | Hora | Precio | SourceType | SourceFileName | SourceArchiveId | ExtractionTimestamp
+
+    IMPORTANTE:
+    El año/mes se obtiene del nombre del fichero, no de la línea 2 del TXT.
+    Esto es imprescindible para tu caso, porque:
+    - A2 puede contener mayo
+    - A1 puede contener junio
+    y la línea 2 del TXT no siempre es fiable para deducir el mes real.
+    """
     try:
         text = txt_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -79,20 +121,30 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
     lines = [line.strip() for line in text.replace("\r", "").split("\n") if line.strip()]
 
     if len(lines) < 3:
+        print(f"[WARN] {os.path.basename(source_file_name)}: menos de 3 líneas útiles. Se ignora.")
         return empty_df()
 
-    meta_parts = [p for p in lines[1].split(";") if p != ""]
-    if len(meta_parts) >= 2 and meta_parts[0].isdigit() and meta_parts[1].isdigit():
-        base_year = int(meta_parts[0])
-        base_month = int(meta_parts[1])
+    # >>> CLAVE: usar SIEMPRE el nombre del fichero como fuente principal
+    file_start_date, file_end_date = extract_period_from_filename(source_file_name)
+
+    if file_start_date is not None:
+        base_year = file_start_date.year
+        base_month = file_start_date.month
     else:
-        today = date.today()
-        base_year = today.year
-        base_month = today.month
+        # fallback por seguridad
+        meta_parts = [p for p in lines[1].split(";") if p != ""]
+        if len(meta_parts) >= 2 and meta_parts[0].isdigit() and meta_parts[1].isdigit():
+            base_year = int(meta_parts[0])
+            base_month = int(meta_parts[1])
+        else:
+            today = date.today()
+            base_year = today.year
+            base_month = today.month
 
     extraction_ts = datetime.now()
     records = []
 
+    # A partir de la línea 3 están los días
     for line in lines[2:]:
         parts = line.split(";")
         if not parts:
@@ -102,6 +154,7 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
         if len(first_token) < 2:
             continue
 
+        # Ejemplo: "D 01" -> día 01
         day_str = first_token[-2:]
         if not day_str.isdigit():
             continue
@@ -118,13 +171,20 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
             except ValueError:
                 continue
 
+        # Si ese día no tiene valores, lo ignoramos
         if not values:
             continue
 
         for hour, price in enumerate(values, start=1):
+            try:
+                fecha = date(base_year, base_month, day_num)
+            except ValueError:
+                # Si por cualquier motivo el día no encaja en el mes, lo ignoramos
+                continue
+
             records.append(
                 {
-                    "Fecha": date(base_year, base_month, day_num),
+                    "Fecha": fecha,
                     "Hora": hour,
                     "Precio": price,
                     "SourceType": source_type,
@@ -135,12 +195,24 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
             )
 
     if not records:
+        print(f"[WARN] {os.path.basename(source_file_name)}: no se han podido extraer registros válidos.")
         return empty_df()
 
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+
+    print(
+        f"[INFO] Parseado {os.path.basename(source_file_name)} | "
+        f"filas={len(df)} | fecha_min={df['Fecha'].min()} | fecha_max={df['Fecha'].max()}"
+    )
+
+    return df
 
 
 def read_archive_files(token: str, archive_id: int, prefix: str, source_type: str, start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Lee todos los ficheros de un archive cuyo nombre empiece por el prefijo indicado.
+    Si no hay ZIP, si no hay archivos o si algo falla, devuelve DataFrame vacío.
+    """
     zip_bytes = download_zip(token, archive_id, start_date, end_date)
     if zip_bytes is None:
         print(f"[INFO] Archive {archive_id}: sin ZIP disponible.")
@@ -157,9 +229,14 @@ def read_archive_files(token: str, archive_id: int, prefix: str, source_type: st
                 if os.path.basename(name).lower().startswith(prefix.lower())
             ]
 
+            print(f"[INFO] Archive {archive_id} | Prefijo {prefix} | Ficheros encontrados: {matching_files}")
+
             if not matching_files:
                 print(f"[INFO] Archive {archive_id}: no se encontró ningún fichero con prefijo {prefix}")
                 return empty_df()
+
+            # Ordenamos por nombre por estabilidad
+            matching_files = sorted(matching_files)
 
             for name in matching_files:
                 try:
@@ -220,6 +297,12 @@ def load_existing_history(path: str) -> pd.DataFrame:
 
 
 def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reglas:
+    - misma Fecha + Hora => conservar una sola fila
+    - A1 tiene prioridad sobre A2
+    - si hubiera varias cargas, se queda la más reciente
+    """
     if df.empty:
         return df
 
@@ -265,6 +348,7 @@ def main():
     start_date, end_date = build_window()
     print(f"[INFO] Ventana de búsqueda: {start_date} -> {end_date}")
 
+    # A1 -> archive 2
     df_a1 = read_archive_files(
         token=token,
         archive_id=2,
@@ -274,6 +358,7 @@ def main():
         end_date=end_date,
     )
 
+    # A2 -> archive 3
     df_a2 = read_archive_files(
         token=token,
         archive_id=3,
@@ -288,6 +373,7 @@ def main():
 
     old_df = load_existing_history(OUTPUT_FILE)
 
+    # Si no hay nada nuevo, conservar histórico y salir sin error
     if df_a1.empty and df_a2.empty:
         print("[INFO] No se encontraron datos nuevos ni en A1 ni en A2. Se conserva el histórico actual.")
         if old_df.empty:
@@ -305,6 +391,10 @@ def main():
 
     print(f"[OK] Histórico actualizado correctamente en {OUTPUT_FILE}")
     print(f"[OK] Filas totales: {len(final_df)}")
+
+    if not final_df.empty:
+        print(f"[OK] Fecha mínima final: {final_df['Fecha'].min()}")
+        print(f"[OK] Fecha máxima final: {final_df['Fecha'].max()}")
 
 
 if __name__ == "__main__":
