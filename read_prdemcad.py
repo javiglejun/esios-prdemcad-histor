@@ -1,6 +1,42 @@
 import io
 import os
-import    return pd.DataFrame(import zipfile
+import zipfile
+from datetime import datetime, date, timedelta
+
+import pandas as pd
+import requests
+
+
+OUTPUT_FILE = "Historico_prdemcad.xlsx"
+OUTPUT_SHEET = "Datos"
+
+
+def build_window():
+    """
+    Ventana de búsqueda:
+    desde el primer día del mes anterior hasta hoy.
+    Esto cubre el caso típico:
+    - A2 = mes anterior
+    - A1 = mes actual
+    """
+    today = date.today()
+    first_day_this_month = today.replace(day=1)
+    last_day_prev_month = first_day_this_month - timedelta(days=1)
+    first_day_prev_month = last_day_prev_month.replace(day=1)
+    return first_day_prev_month, today
+
+
+def build_url_params(start_date: date, end_date: date):
+    return {
+        "date_type": "datos",
+        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
+        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
+        "locale": "es",
+    }
+
+
+def empty_df():
+    return pd.DataFrame(
         columns=[
             "Fecha",
             "Hora",
@@ -35,10 +71,6 @@ def download_zip(token: str, archive_id: int, start_date: date, end_date: date):
 
 
 def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, source_archive_id: int) -> pd.DataFrame:
-    """
-    Convierte el TXT prdemcad en una tabla:
-    Fecha | Hora | Precio | SourceType | SourceFileName | SourceArchiveId | ExtractionTimestamp
-    """
     try:
         text = txt_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -109,10 +141,6 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
 
 
 def read_archive_files(token: str, archive_id: int, prefix: str, source_type: str, start_date: date, end_date: date) -> pd.DataFrame:
-    """
-    Lee todos los ficheros de un archive cuyo nombre empiece por el prefijo indicado.
-    Si no hay ZIP, si no hay archivos o si algo falla, devuelve DataFrame vacío.
-    """
     zip_bytes = download_zip(token, archive_id, start_date, end_date)
     if zip_bytes is None:
         print(f"[INFO] Archive {archive_id}: sin ZIP disponible.")
@@ -192,12 +220,6 @@ def load_existing_history(path: str) -> pd.DataFrame:
 
 
 def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Reglas:
-    - misma Fecha + Hora => conservar una sola fila
-    - A1 tiene prioridad sobre A2
-    - si hubiera varias cargas, se queda la más reciente
-    """
     if df.empty:
         return df
 
@@ -243,7 +265,6 @@ def main():
     start_date, end_date = build_window()
     print(f"[INFO] Ventana de búsqueda: {start_date} -> {end_date}")
 
-    # A1 -> archive 2
     df_a1 = read_archive_files(
         token=token,
         archive_id=2,
@@ -253,7 +274,6 @@ def main():
         end_date=end_date,
     )
 
-    # A2 -> archive 3
     df_a2 = read_archive_files(
         token=token,
         archive_id=3,
@@ -289,38 +309,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-from datetime import datetime, date, timedelta
-
-import pandas as pd
-import requests
-
-
-OUTPUT_FILE = "Historico_prdemcad.xlsx"
-OUTPUT_SHEET = "Datos"
-
-
-def build_window():
-    """
-    Ventana de búsqueda:
-    desde el primer día del mes anterior hasta hoy.
-    Esto cubre el caso típico:
-    - A2 = mes anterior
-    - A1 = mes actual
-    """
-    today = date.today()
-    first_day_this_month = today.replace(day=1)
-    last_day_prev_month = first_day_this_month - timedelta(days=1)
-    first_day_prev_month = last_day_prev_month.replace(day=1)
-    return first_day_prev_month, today
-
-
-def build_url_params(start_date: date, end_date: date):
-    return {
-        "date_type": "datos",
-        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
-        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
-        "locale": "es",
-    }
-
-
-def empty_df():
