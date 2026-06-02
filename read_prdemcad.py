@@ -1,40 +1,6 @@
-import ioimport io zipfile
-from datetime import datetime, date, timedelta
-
-import pandas as pd
-import requests
-
-
-OUTPUT_FILE = "Historico_prdemcad.xlsx"
-OUTPUT_SHEET = "Datos"
-
-
-def build_window():
-    """
-    Ventana de búsqueda:
-    desde el primer día del mes anterior hasta hoy.
-    Esto cubre el caso típico:
-    - A2 = mes anterior
-    - A1 = mes actual
-    """
-    today = date.today()
-    first_day_this_month = today.replace(day=1)
-    last_day_prev_month = first_day_this_month - timedelta(days=1)
-    first_day_prev_month = last_day_prev_month.replace(day=1)
-    return first_day_prev_month, today
-
-
-def build_url_params(start_date: date, end_date: date):
-    return {
-        "date_type": "datos",
-        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
-        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
-        "locale": "es",
-    }
-
-
-def empty_df():
-    return pd.DataFrame(
+import io
+import os
+import    return pd.DataFrame(import zipfile
         columns=[
             "Fecha",
             "Hora",
@@ -83,7 +49,6 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
     if len(lines) < 3:
         return empty_df()
 
-    # Línea 2 suele ser algo como: 2026;05;28;13;42;36;
     meta_parts = [p for p in lines[1].split(";") if p != ""]
     if len(meta_parts) >= 2 and meta_parts[0].isdigit() and meta_parts[1].isdigit():
         base_year = int(meta_parts[0])
@@ -105,7 +70,6 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
         if len(first_token) < 2:
             continue
 
-        # Ejemplo: "V 01" -> día 01
         day_str = first_token[-2:]
         if not day_str.isdigit():
             continue
@@ -122,7 +86,6 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
             except ValueError:
                 continue
 
-        # Si la línea no tiene precios, la ignoramos
         if not values:
             continue
 
@@ -305,7 +268,6 @@ def main():
 
     old_df = load_existing_history(OUTPUT_FILE)
 
-    # Si no hay nada nuevo, conservar histórico y salir sin error
     if df_a1.empty and df_a2.empty:
         print("[INFO] No se encontraron datos nuevos ni en A1 ni en A2. Se conserva el histórico actual.")
         if old_df.empty:
@@ -327,6 +289,38 @@ def main():
 
 if __name__ == "__main__":
     main()
-import os
+from datetime import datetime, date, timedelta
+
+import pandas as pd
+import requests
 
 
+OUTPUT_FILE = "Historico_prdemcad.xlsx"
+OUTPUT_SHEET = "Datos"
+
+
+def build_window():
+    """
+    Ventana de búsqueda:
+    desde el primer día del mes anterior hasta hoy.
+    Esto cubre el caso típico:
+    - A2 = mes anterior
+    - A1 = mes actual
+    """
+    today = date.today()
+    first_day_this_month = today.replace(day=1)
+    last_day_prev_month = first_day_this_month - timedelta(days=1)
+    first_day_prev_month = last_day_prev_month.replace(day=1)
+    return first_day_prev_month, today
+
+
+def build_url_params(start_date: date, end_date: date):
+    return {
+        "date_type": "datos",
+        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
+        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
+        "locale": "es",
+    }
+
+
+def empty_df():
