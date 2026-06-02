@@ -1,62 +1,15 @@
 import io
 import os
-import zipfile
-from datetime import datetime, date, timedelta
-
-import pandas as pd
-import requests
-
-
-OUTPUT_FILE = "Historico_prdemcad.xlsx"
-OUTPUT_SHEET = "Datos"
-
-
-def build_window():
-    """
-    Descarga desde el primer día del mes anterior hasta hoy.
-    Esto permite traer A2 del mes anterior y A1/A2 del mes actual.
-    """
-    today = date.today()
-    first_day_this_month = today.replace(day=1)
-    last_day_prev_month = first_day_this_month - timedelta(days=1)
-    first_day_prev_month = last_day_prev_month.replace(day=1)
-    return first_day_prev_month, today
-
-
-def build_url_params(start_date: date, end_date: date):
-    return {
-        "date_type": "datos",
-        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
-        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
-        "locale": "es",
-    }
-
-
-def download_zip(token: str, archive_id: int, start_date: date, end_date: date) -> bytes:
-    url = f"https://api.esios.ree.es/archives/{archive_id}/download"
-    headers = {
-        "x-api-key": token,
-        "Accept": "application/zip",
-    }
-    params = build_url_params(start_date, end_date)
-
-    response = requests.get(url, headers=headers, params=params, timeout=120)
-    response.raise_for_status()
-    return response.content
-
-
-def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, source_archive_id: int) -> pd.DataFrame:
-    try:
-        text = txt_bytes.decode("utf-8")
+")import zipfile
     except UnicodeDecodeError:
         text = txt_bytes.decode("cp1252")
 
     lines = [line.strip() for line in text.replace("\r", "").split("\n") if line.strip()]
 
     if len(lines) < 3:
-        return pd.DataFrame()
+        return empty_df()
 
-    # La segunda línea suele tener año y mes: 2026;05;28;13;42;36;
+    # Línea 2 suele ser algo como: 2026;05;28;13;42;36;
     meta_parts = [p for p in lines[1].split(";") if p != ""]
     if len(meta_parts) >= 2 and meta_parts[0].isdigit() and meta_parts[1].isdigit():
         base_year = int(meta_parts[0])
@@ -69,7 +22,6 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
     extraction_ts = datetime.now()
     records = []
 
-    # A partir de la tercera línea están los días
     for line in lines[2:]:
         parts = line.split(";")
         if not parts:
@@ -96,7 +48,7 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
             except ValueError:
                 continue
 
-        # Si no hay valores, se ignora la línea
+        # Si la línea no tiene precios, la ignoramos
         if not values:
             continue
 
@@ -113,66 +65,82 @@ def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, s
                 }
             )
 
+    if not records:
+        return empty_df()
+
     return pd.DataFrame(records)
 
 
 def read_archive_files(token: str, archive_id: int, prefix: str, source_type: str, start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Lee todos los ficheros de un archive cuyo nombre empiece por el prefijo indicado.
+    Si no hay ZIP, si no hay archivos o si algo falla, devuelve DataFrame vacío.
+    """
     zip_bytes = download_zip(token, archive_id, start_date, end_date)
+    if zip_bytes is None:
+        print(f"[INFO] Archive {archive_id}: sin ZIP disponible.")
+        return empty_df()
 
     dfs = []
 
-    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
-        file_names = zf.namelist()
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            file_names = zf.namelist()
 
-        matching_files = [
-            name for name in file_names
-            if os.path.basename(name).lower().startswith(prefix.lower())
-        ]
+            matching_files = [
+                name for name in file_names
+                if os.path.basename(name).lower().startswith(prefix.lower())
+            ]
 
-        for name in matching_files:
-            with zf.open(name) as f:
-                txt_bytes = f.read()
+            if not matching_files:
+                print(f"[INFO] Archive {archive_id}: no se encontró ningún fichero con prefijo {prefix}")
+                return empty_df()
 
-            df = parse_txt_bytes(
-                txt_bytes=txt_bytes,
-                source_type=source_type,
-                source_file_name=name,
-                source_archive_id=archive_id,
-            )
+            for name in matching_files:
+                try:
+                    with zf.open(name) as f:
+                        txt_bytes = f.read()
 
-            if not df.empty:
-                dfs.append(df)
+                    df = parse_txt_bytes(
+                        txt_bytes=txt_bytes,
+                        source_type=source_type,
+                        source_file_name=name,
+                        source_archive_id=archive_id,
+                    )
+
+                    if not df.empty:
+                        dfs.append(df)
+
+                except Exception as e:
+                    print(f"[WARN] Error procesando el fichero {name} del archive {archive_id}: {e}")
+
+    except zipfile.BadZipFile:
+        print(f"[WARN] Archive {archive_id}: el contenido descargado no es un ZIP válido.")
+        return empty_df()
+    except Exception as e:
+        print(f"[WARN] Error leyendo el ZIP del archive {archive_id}: {e}")
+        return empty_df()
 
     if not dfs:
-        return pd.DataFrame(
-            columns=[
-                "Fecha", "Hora", "Precio", "SourceType",
-                "SourceFileName", "SourceArchiveId", "ExtractionTimestamp"
-            ]
-        )
+        return empty_df()
 
     return pd.concat(dfs, ignore_index=True)
 
 
 def load_existing_history(path: str) -> pd.DataFrame:
-    expected_columns = [
-        "Fecha",
-        "Hora",
-        "Precio",
-        "SourceType",
-        "SourceFileName",
-        "SourceArchiveId",
-        "ExtractionTimestamp",
-    ]
-
     if not os.path.exists(path):
-        return pd.DataFrame(columns=expected_columns)
+        return empty_df()
 
-    df = pd.read_excel(path, sheet_name=OUTPUT_SHEET, engine="openpyxl")
+    try:
+        df = pd.read_excel(path, sheet_name=OUTPUT_SHEET, engine="openpyxl")
+    except Exception as e:
+        print(f"[WARN] No se pudo leer el histórico existente. Se recreará vacío. Error: {e}")
+        return empty_df()
 
     if df.empty:
-        return pd.DataFrame(columns=expected_columns)
+        return empty_df()
 
+    expected_columns = empty_df().columns.tolist()
     for col in expected_columns:
         if col not in df.columns:
             df[col] = pd.NA
@@ -187,6 +155,12 @@ def load_existing_history(path: str) -> pd.DataFrame:
 
 
 def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reglas:
+    - misma Fecha + Hora => conservar una sola fila
+    - A1 tiene prioridad sobre A2
+    - si hubiera varias cargas, se queda la más reciente
+    """
     if df.empty:
         return df
 
@@ -197,7 +171,6 @@ def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce")
     df["ExtractionTimestamp"] = pd.to_datetime(df["ExtractionTimestamp"], errors="coerce")
 
-    # Prioridad: A1 > A2
     df["PrioritySourceType"] = df["SourceType"].map({"A1": 2, "A2": 1}).fillna(0)
 
     df = df.sort_values(
@@ -220,16 +193,7 @@ def save_history(df: pd.DataFrame, path: str):
 
 def create_empty_history_if_missing(path: str):
     if not os.path.exists(path):
-        df = pd.DataFrame(columns=[
-            "Fecha",
-            "Hora",
-            "Precio",
-            "SourceType",
-            "SourceFileName",
-            "SourceArchiveId",
-            "ExtractionTimestamp",
-        ])
-        save_history(df, path)
+        save_history(empty_df(), path)
 
 
 def main():
@@ -240,6 +204,7 @@ def main():
     create_empty_history_if_missing(OUTPUT_FILE)
 
     start_date, end_date = build_window()
+    print(f"[INFO] Ventana de búsqueda: {start_date} -> {end_date}")
 
     # A1 -> archive 2
     df_a1 = read_archive_files(
@@ -261,20 +226,107 @@ def main():
         end_date=end_date,
     )
 
-    new_df = pd.concat([df_a1, df_a2], ignore_index=True)
+    print(f"[INFO] Filas nuevas A1: {len(df_a1)}")
+    print(f"[INFO] Filas nuevas A2: {len(df_a2)}")
 
     old_df = load_existing_history(OUTPUT_FILE)
 
+    # Si no hay nada nuevo, conservar histórico y salir sin error
+    if df_a1.empty and df_a2.empty:
+        print("[INFO] No se encontraron datos nuevos ni en A1 ni en A2. Se conserva el histórico actual.")
+        if old_df.empty:
+            print("[INFO] El histórico todavía está vacío.")
+        else:
+            save_history(old_df, OUTPUT_FILE)
+            print(f"[INFO] Histórico conservado sin cambios: {OUTPUT_FILE} ({len(old_df)} filas)")
+        return
+
+    new_df = pd.concat([df_a1, df_a2], ignore_index=True)
     combined = pd.concat([old_df, new_df], ignore_index=True)
     final_df = deduplicate(combined)
 
     save_history(final_df, OUTPUT_FILE)
 
-    print(f"Histórico actualizado correctamente en {OUTPUT_FILE}")
-    print(f"Filas totales: {len(final_df)}")
-    print(f"Nuevas filas A1: {len(df_a1)}")
-    print(f"Nuevas filas A2: {len(df_a2)}")
+    print(f"[OK] Histórico actualizado correctamente en {OUTPUT_FILE}")
+    print(f"[OK] Filas totales: {len(final_df)}")
 
 
 if __name__ == "__main__":
     main()
+
+from datetime import datetime, date, timedelta
+
+import pandas as pd
+import requests
+
+
+OUTPUT_FILE = "Historico_prdemcad.xlsx"
+OUTPUT_SHEET = "Datos"
+
+
+def build_window():
+    """
+    Ventana de búsqueda:
+    desde el primer día del mes anterior hasta hoy.
+    Esto cubre el caso típico:
+    - A2 = mes anterior
+    - A1 = mes actual
+    """
+    today = date.today()
+    first_day_this_month = today.replace(day=1)
+    last_day_prev_month = first_day_this_month - timedelta(days=1)
+    first_day_prev_month = last_day_prev_month.replace(day=1)
+    return first_day_prev_month, today
+
+
+def build_url_params(start_date: date, end_date: date):
+    return {
+        "date_type": "datos",
+        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
+        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
+        "locale": "es",
+    }
+
+
+def empty_df():
+    return pd.DataFrame(
+        columns=[
+            "Fecha",
+            "Hora",
+            "Precio",
+            "SourceType",
+            "SourceFileName",
+            "SourceArchiveId",
+            "ExtractionTimestamp",
+        ]
+    )
+
+
+def download_zip(token: str, archive_id: int, start_date: date, end_date: date):
+    """
+    Descarga el ZIP del archive.
+    Si falla, devuelve None en lugar de romper el proceso.
+    """
+    url = f"https://api.esios.ree.es/archives/{archive_id}/download"
+    headers = {
+        "x-api-key": token,
+        "Accept": "application/zip",
+    }
+    params = build_url_params(start_date, end_date)
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=120)
+        response.raise_for_status()
+        return response.content
+    except Exception as e:
+        print(f"[WARN] No se pudo descargar archive {archive_id}: {e}")
+        return None
+
+
+def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, source_archive_id: int) -> pd.DataFrame:
+    """
+    Convierte el TXT prdemcad en una tabla:
+    Fecha | Hora | Precio | SourceType | SourceFileName | SourceArchiveId | ExtractionTimestamp
+    """
+    try:
+
