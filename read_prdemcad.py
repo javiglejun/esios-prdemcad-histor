@@ -1,6 +1,80 @@
-import io
-import os
-")import zipfile
+import ioimport io zipfile
+from datetime import datetime, date, timedelta
+
+import pandas as pd
+import requests
+
+
+OUTPUT_FILE = "Historico_prdemcad.xlsx"
+OUTPUT_SHEET = "Datos"
+
+
+def build_window():
+    """
+    Ventana de búsqueda:
+    desde el primer día del mes anterior hasta hoy.
+    Esto cubre el caso típico:
+    - A2 = mes anterior
+    - A1 = mes actual
+    """
+    today = date.today()
+    first_day_this_month = today.replace(day=1)
+    last_day_prev_month = first_day_this_month - timedelta(days=1)
+    first_day_prev_month = last_day_prev_month.replace(day=1)
+    return first_day_prev_month, today
+
+
+def build_url_params(start_date: date, end_date: date):
+    return {
+        "date_type": "datos",
+        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
+        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
+        "locale": "es",
+    }
+
+
+def empty_df():
+    return pd.DataFrame(
+        columns=[
+            "Fecha",
+            "Hora",
+            "Precio",
+            "SourceType",
+            "SourceFileName",
+            "SourceArchiveId",
+            "ExtractionTimestamp",
+        ]
+    )
+
+
+def download_zip(token: str, archive_id: int, start_date: date, end_date: date):
+    """
+    Descarga el ZIP del archive.
+    Si falla, devuelve None en lugar de romper el proceso.
+    """
+    url = f"https://api.esios.ree.es/archives/{archive_id}/download"
+    headers = {
+        "x-api-key": token,
+        "Accept": "application/zip",
+    }
+    params = build_url_params(start_date, end_date)
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=120)
+        response.raise_for_status()
+        return response.content
+    except Exception as e:
+        print(f"[WARN] No se pudo descargar archive {archive_id}: {e}")
+        return None
+
+
+def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, source_archive_id: int) -> pd.DataFrame:
+    """
+    Convierte el TXT prdemcad en una tabla:
+    Fecha | Hora | Precio | SourceType | SourceFileName | SourceArchiveId | ExtractionTimestamp
+    """
+    try:
+        text = txt_bytes.decode("utf-8")
     except UnicodeDecodeError:
         text = txt_bytes.decode("cp1252")
 
@@ -253,80 +327,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+import os
 
-from datetime import datetime, date, timedelta
-
-import pandas as pd
-import requests
-
-
-OUTPUT_FILE = "Historico_prdemcad.xlsx"
-OUTPUT_SHEET = "Datos"
-
-
-def build_window():
-    """
-    Ventana de búsqueda:
-    desde el primer día del mes anterior hasta hoy.
-    Esto cubre el caso típico:
-    - A2 = mes anterior
-    - A1 = mes actual
-    """
-    today = date.today()
-    first_day_this_month = today.replace(day=1)
-    last_day_prev_month = first_day_this_month - timedelta(days=1)
-    first_day_prev_month = last_day_prev_month.replace(day=1)
-    return first_day_prev_month, today
-
-
-def build_url_params(start_date: date, end_date: date):
-    return {
-        "date_type": "datos",
-        "start_date": start_date.strftime("%Y-%m-%d") + "T00:00:00+00:00",
-        "end_date": end_date.strftime("%Y-%m-%d") + "T23:59:59+00:00",
-        "locale": "es",
-    }
-
-
-def empty_df():
-    return pd.DataFrame(
-        columns=[
-            "Fecha",
-            "Hora",
-            "Precio",
-            "SourceType",
-            "SourceFileName",
-            "SourceArchiveId",
-            "ExtractionTimestamp",
-        ]
-    )
-
-
-def download_zip(token: str, archive_id: int, start_date: date, end_date: date):
-    """
-    Descarga el ZIP del archive.
-    Si falla, devuelve None en lugar de romper el proceso.
-    """
-    url = f"https://api.esios.ree.es/archives/{archive_id}/download"
-    headers = {
-        "x-api-key": token,
-        "Accept": "application/zip",
-    }
-    params = build_url_params(start_date, end_date)
-
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=120)
-        response.raise_for_status()
-        return response.content
-    except Exception as e:
-        print(f"[WARN] No se pudo descargar archive {archive_id}: {e}")
-        return None
-
-
-def parse_txt_bytes(txt_bytes: bytes, source_type: str, source_file_name: str, source_archive_id: int) -> pd.DataFrame:
-    """
-    Convierte el TXT prdemcad en una tabla:
-    Fecha | Hora | Precio | SourceType | SourceFileName | SourceArchiveId | ExtractionTimestamp
-    """
-    try:
 
