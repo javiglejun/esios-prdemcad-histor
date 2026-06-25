@@ -34,6 +34,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Historico_prdemcad.xlsx
-          git diff --cached --quiet || git commit -m "Actualiza histórico prdemcad"
+          git add Historico_prdemcad.xlsx data.csv
+          git diff --cached --quiet || git commit -m "Actualiza histórico prdemcad + csv"
           git push
