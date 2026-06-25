@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dashboard prdemcad</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+
+<h1>Precio prdemcad</h1>
+
+<div id="grafico" style="width:90%;height:500px;"></div>
+
+<script>
+fetch('data.csv')
+  .then(response => response.text())
+  .then(data => {
+
+    const filas = data.split('\n').slice(1);
+
+    let fechas = [];
+    let valores = [];
+
+    filas.forEach(f => {
+      if (f.trim() === "") return;
+
+      const cols = f.split(',');
+
+      fechas.push(cols[0]);
+      valores.push(parseFloat(cols[1]));
+    });
+
+    const trace = {
+      x: fechas,
+      y: valores,
+      type: 'scatter',
+      mode: 'lines+markers',
+      line: {color: 'blue'}
+    };
+
+    const layout = {
+      title: 'Serie histórica prdemcad',
+      xaxis: {title: 'Fecha'},
+      yaxis: {title: 'Precio'}
+    };
+
+    Plotly.newPlot('grafico', [trace], layout);
+  });
+</script>
+
+</body>
+</html>
