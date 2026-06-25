@@ -399,3 +399,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+import pandas as pd
+
+# Leer el Excel
+df = pd.read_excel("Historico_prdemcad.xlsx")
+
+# Guarda como CSV para la web
+df.to_csv("data.csv", index=False)
+
+
